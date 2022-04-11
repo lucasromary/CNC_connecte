@@ -9,10 +9,10 @@ extern "C"
 #include <AsyncMqttClient.h>
 #include <Wire.h>
 
-#define WIFI_SSID "crunchlab"
-#define WIFI_PASSWORD "crunchlab"
+#define WIFI_SSID "Factorybox"
+#define WIFI_PASSWORD "F4c70ry80X"
 
-#define MQTT_HOST IPAddress(172, 23, 193, 33)
+#define MQTT_HOST IPAddress(10, 3, 141, 1)
 #define MQTT_PORT 1883
 
 #define MQTT_TOPIC_COUNTER "CNC/codeur"
@@ -30,6 +30,13 @@ int last_val_count = 0;
 int counter = 0;
 long long last_timer_counter = 0;
 
+// valeur du seuil de courant mesure au dela duquel la CNC est
+// consideree comme en etat de fonctionnement. 
+const float seuil_courant = 10; // to be define
+// booleen pour suivre si la CNC est en fonctionnement ou pas
+bool bCNC_isRuning = false;
+enum cncStatusChange_t { CNC_NO_STATUS_CHANGE = 0, CNC_JUST_START , CNC_JUST_STOP};
+
 uint16_t DistCm = 0;      // distance
 uint16_t Amp = 0;         // signal strength
 uint16_t Temp = 0;        // temperature
@@ -40,7 +47,7 @@ const byte TfLuna = 0x10; // Adresse I2C du capteur
 float amplitude_current; // amplitude current
 float effective_value;   // effective current
 int sensor_max = 0;
-int pin_electricity_sensor = 35;
+int pin_electricity_sensor = 14;
 
 
 int getMaxValue()
@@ -71,15 +78,36 @@ void getConso()
                                                // Only for sinusoidal alternating current
 }
 
+cncStatusChange_t getCNC_isWorking(){
+  int sensorValue = analogRead(pin_electricity_sensor);
+  getConso();
+  Serial.println(amplitude_current);
+  Serial.print(" courant = ");
+  Serial.println(sensorValue);
+  if(sensorValue > seuil_courant && !bCNC_isRuning){
+    bCNC_isRuning = true;
+    return CNC_JUST_START;
+  } else if (sensorValue <=  seuil_courant && bCNC_isRuning){
+    bCNC_isRuning = false;
+  return CNC_JUST_STOP;
+  } else {
+    return CNC_NO_STATUS_CHANGE;
+  }
+}
 
 void connectToWifi()
 {
   Serial.print("Connecting to Wi-Fi...");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  int counter_wifi = 0;
   while (WiFi.status() != WL_CONNECTED)
   {
     Serial.print(".");
     delay(500);
+    counter_wifi++;
+    if(counter_wifi > 120){
+      ESP.restart();
+    }
   }
   Serial.println("");
 }
@@ -218,9 +246,8 @@ void task2(void * pvParameters) {
   while(1){
     delay(1000);
     if(MesureDistLuna(TfLuna)){
-        //getConso();
         Serial.print(" Distance : ");
-        Serial.print(DistCm);
+        Serial.println(DistCm);
         /*
         Serial.print(" Current = ");
         Serial.print(amplitude_current, 1); // Only one number after the decimal point
@@ -230,7 +257,7 @@ void task2(void * pvParameters) {
     }
   }
 }
-
+// MQTT publish
 void task3(void * pvParameters) {
   while(1){
     Serial.print("task3 Uptime (ms): ");
@@ -240,7 +267,31 @@ void task3(void * pvParameters) {
     delay(2000);
   }
 }
+/*
+// Power managment
+void task4(void * pvParameters) {
+  while(1){
+    //Serial.print("task4 ");
+    //Serial.println(millis());
+    switch (getCNC_isWorking())
+    {
+    case CNC_JUST_START:
+    Serial.println("ON");
+      mqttClient.publish((MQTT_TOPIC_CONSO), 2, false, "ON");
+      break;
+    case CNC_JUST_STOP:
+    Serial.println("OFF");
+      mqttClient.publish((MQTT_TOPIC_CONSO), 2, false, "OFF");
+      break;
+    default:
+    // do nothing
+      break;
+    }
+    delay(500);
+  }
+}
 
+*/
 void setup() { //task 1 -> encoder , task 2 -> distance, task3 -> mqtt
   M5.begin(true,true,true,true); //Init M5Tough.  初始化M5Tough
   Serial.begin(115200);
@@ -259,8 +310,8 @@ void setup() { //task 1 -> encoder , task 2 -> distance, task3 -> mqtt
   connectToWifi();
 
   pinMode(26,INPUT);
-  pinMode(pin_electricity_sensor,INPUT);
-  // Creat Task1.  创建线程1
+  //pinMode(pin_electricity_sensor,ANALOG);
+  // Creat Task1.  
   xTaskCreatePinnedToCore(
                   task1,     //Function to implement the task.  线程对应函数名称(不能有返回值)
                   "task1",   //线程名称
@@ -280,7 +331,7 @@ void setup() { //task 1 -> encoder , task 2 -> distance, task3 -> mqtt
                   NULL,
                   0);
 
-  // Task 3
+  // Task 3, send data over MQTT
   xTaskCreatePinnedToCore(
                   task3,
                   "task3",
@@ -289,8 +340,19 @@ void setup() { //task 1 -> encoder , task 2 -> distance, task3 -> mqtt
                   3,
                   NULL,
                   0);
+/*
+  // Task 4, Power managment
+  xTaskCreatePinnedToCore(
+                  task4,
+                  "task4",
+                  4096,
+                  NULL,
+                  3,
+                  NULL,
+                  0);
 
   last_timer_counter = millis();
+  */
 }
 
 void loop() {
